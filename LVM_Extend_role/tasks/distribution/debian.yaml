@@ -89,7 +89,7 @@
   command: lvs --noheadings -o lv_name,vg_name --select vg_name={{ vg_name }}
   register: lvs_result
   changed_when: false
-  ignore_errors: yes
+  # ignore_errors: yes
 
 - name: Parse LV names from command output
   set_fact:
