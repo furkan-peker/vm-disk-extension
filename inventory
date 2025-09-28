@@ -1,5 +1,5 @@
 [debian_servers]
-10.42.102.215
+<ip_address_for_target_linux_machine>
 
 [debian_servers:vars]
 ansible_user="ubuntu"
