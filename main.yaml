@@ -1,0 +1,41 @@
+---
+- name: VM Disk Extension
+  hosts: debian_servers
+  gather_facts: true
+  tasks:
+    # ---------- Here is the first step : Get the scsı ID info. by the user as an input over Redmine ------
+    - name: Get details of the Redmine
+      ansible.builtin.uri:
+        url: "https://redmine.aurorabilisim.com/issues/52816.json"
+        method: Get
+        headers:
+          X-Redmine-API-Key: "29b144abe0e04817020654eaeb6742f2bc640d80"
+          Content-Type: "application/json"
+        status_code: 200 # Explicitly expecting a 200 OK response
+        body_format: json
+      register: redmine_issue_response
+
+    - name: Get the SCSI ID from the issue description
+      set_fact:
+        scsi_ID: "{{ redmine_issue_response.json.issue.description }}"
+    
+    
+    # ------------------------------   Alternative way to fetch the information of scsi id.   ------------------------------
+    # # To be able to globally use this scsi ID inside /LVM-Extend-role/tasks/main.yaml, you have to use the function 'set-fact' like below:
+    # - name: Get the SCSI ID
+    #   ansible.builtin.script: get_scsi_id.py {{ REDMINE_URL }} {{ REDMINE_API_KEY }} {{ RUN_AWX }}
+    #   args:
+    #     executable: python3
+    #   register: scsi_ID
+
+
+    # ---------- Roles ---------- 
+    # The reason for execution of roles now by including as a task is that we cannot run them after getting the scsi ID via RedMine if we want to run them with 'roles' function.
+    - ansible.builtin.include_role:
+        name: "LVM_Extend_role"
+        tasks_from: main
+      vars:
+        scsi_ID_info: "{{ scsi_ID }}"
+
+    
+

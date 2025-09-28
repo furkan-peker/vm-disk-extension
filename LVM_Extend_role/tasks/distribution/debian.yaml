@@ -1,0 +1,191 @@
+---
+# Step 1: Determine correct PV Tag using SCSI ID that has been fetched from Redmine previously
+- name: Declare the standard prefix for scsi id
+  set_fact:
+    prefix: "scsi-0QEMU_QEMU_HARDDISK_drive-"
+
+- name: Construct full SCSI device ID
+  set_fact:
+    full_scsi_id: "{{ prefix + scsi_ID_info }}"  # scsi_ID_info has fetched from main.yaml in root directory.
+
+- name: Get symlink target for full SCSI ID
+  stat:
+    path: "/dev/disk/by-id/{{ full_scsi_id }}"
+  register: scsi_stat
+
+
+- name: Find all LVM PV UUID symlinks  # Check Point 2: Check if there is a VG to which the disk belongs
+  find:
+    paths: /dev/disk/by-id
+    patterns: "lvm-pv-uuid-*"
+    file_type: link
+  register: pv_links
+
+- name: Get stats for PV symlinks
+  stat:
+    path: "{{ item.path }}"
+  register: pv_stats
+  loop: "{{ pv_links.files }}"
+
+- name: Set PV device path fact and PV UUID fact (which is to validate the correctness of the pv in next steps)
+  set_fact:
+    pv_tag: "/dev/{{ item.stat.lnk_target | basename }}"
+    pv_uuid: "{{ item.item.path | basename | replace('lvm-pv-uuid-', '') }}"
+  loop: "{{ pv_stats.results }}"
+  when: item.stat.lnk_target == scsi_stat.stat.lnk_target
+
+# --------------- Alternative ---------------
+# - name: Set PV device path fact
+#   set_fact:
+#     pv_tag: "/dev/{{ item.stat.lnk_target | basename }}"
+#   loop: "{{ pv_stats.results }}"
+#   when: item.stat.lnk_target == scsi_stat.stat.lnk_target
+
+- name: Print PV device path
+  debug:
+    var: pv_tag
+
+- name: Get features of physical volume to use in comparement of UUID & scsi1 and in extracting some information (like vg_name, uuid)
+  command: "pvdisplay -c {{ pv_tag }}"
+  register: pv_features
+
+# ------------ Alternative : Get UUID Info. for the PV for next steps --------------
+# - name: Get UUID Information
+#   set_fact:
+#     pv_uuid: "{{ pv_features.stdout.split(':')[11] }}"
+
+
+# ----- End for Step 1 -----
+
+
+
+# Step 2: Extend the Physical Volume
+- name: Resize PV
+  command: "pvresize {{ pv_tag }}"
+
+# ----- End for Step 2 -----
+
+
+
+# Step 3: Get VG Name Information
+- name: Get features of physical volume
+  command: "pvdisplay -c {{ pv_tag }}"
+  register: pv_features
+
+- name: Extract the VG Name info
+  set_fact:
+    vg_name: "{{ pv_features.stdout.split(':')[1] | trim }}"
+
+- name: Display volume group name
+  debug:
+    var: vg_name
+
+# ----- End for Step 3 -----
+
+
+
+# Step 4: Extend Logical Volume and Resize its filesystem
+- name: Check if VG exists and get LVs using lvs command
+  command: lvs --noheadings -o lv_name,vg_name --select vg_name={{ vg_name }}
+  register: lvs_result
+  changed_when: false
+  ignore_errors: yes
+
+- name: Parse LV names from command output
+  set_fact:
+    lv_list: "{{ lvs_result.stdout_lines | map('trim') | map('split', ' ') | map('first') | list }}"
+  when: not lvs_result.failed and lvs_result.stdout | trim | length > 0
+
+- name: Set empty list if command failed
+  set_fact:
+    lv_list: []
+  when: lvs_result.failed or lvs_result.stdout | trim | length == 0
+
+- name: Display LV list
+  debug:
+    msg: "LVs in VG {{ vg_name }}: {{ lv_list }}"
+
+- name: Set LV name if LVs exist
+  set_fact:
+    lv_name: "{{ lv_list[0] }}"
+  when: lv_list | length > 0
+
+- name: Display LV name
+  debug:
+    msg: "First LV name: {{ lv_name }}"
+
+
+- name: Extend LV and resize filesystem
+  community.general.lvol:
+    vg: "{{ vg_name}}"
+    lv: "{{ lv_name }}"
+    size: +100%FREE
+    resizefs: true # This will resize the filesystem 
+    state: present
+
+# ----- End for Step 4 -----
+
+
+
+
+
+
+# # -------------- Alternative way over CLI for Step 4  -----------------
+# # Step 4.1: Get LV Path
+# # Not: v1 den sonra; bir vg'de farklı lv'ler arasından hangisinin genişletileceği kararı konuşulacak
+# - name: Extract LV path directly using awk
+#   shell: "lvs -o lv_name,vg_name,lv_path | awk '$2 == \"{{ vg_name }}\" {print $3}'"
+#   register: lv_path_result
+
+# - name: Set the lv_path variable
+#   set_fact:
+#     lv_path: "{{ lv_path_result.stdout }}"
+
+# - name: Display the extracted LV path
+#   debug:
+#     msg: "The LV path for '{{ vg_name }}' is: '{{ lv_path_result.stdout }}'"
+  
+# # ----- End for Step 4.1 -----
+
+
+# # Step 4.2: Extend Logical Volume
+# - name: Extend LV
+#   command: "lvextend -l +100%FREE {{ lv_path }}"
+
+# # ----- End for Step 4.2 -----
+
+
+# # Step 4.3: Get FS Info for lv
+# - name: Get filesystem info for LV
+#   command: "blkid -s TYPE -o value {{ lv_path }}"
+#   register: fs_info
+#   changed_when: false
+  
+# - name: Display filesystem type
+#   debug:
+#     msg: "Filesystem type: {{ fs_info.stdout }}"
+
+
+# Alternative way with file system table:
+# - name: Read and parse fstab
+#   slurp:
+#     src: /etc/fstab
+#   register: fstab_content
+      
+# - name: Extract filesystem type for specific LV
+#   set_fact:
+#     fs_type: "{{ (fstab_content.content | b64decode).split() | select('match', '^[^#]') | map('regex_replace', '\\s+', ' ') | map('split') | select('equalto', lv_path, 0) | map(attribute=2) | first }}"
+
+# - name: Display extracted filesystem type
+#   debug:
+#     msg: "Filesystem type for {{ lv_path }}: {{ fs_type }}"
+
+
+# ----- End for Step 4.3 -----
+
+
+
+# # Step 4.4: Extend fs of şv throughout the lv
+# - name: Extend fs of lv
+
+# # ----- End for Step 4.4 -----

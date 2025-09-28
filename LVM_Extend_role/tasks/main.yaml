@@ -1,0 +1,9 @@
+---
+# tasks file for roles
+- name: Include OS-specific tasks
+  include_tasks: "distribution/debian.yaml"
+  when: ansible_os_family == "Debian"
+
+- name: Completion message
+  ansible.builtin.debug:
+    msg: "The job has finished."
